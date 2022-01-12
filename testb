@@ -1,0 +1,6 @@
+population 100;                     latent       2.0 0;
+infected 1;                         asymptomatic 2   0;
+place home  10  0 0.01;             symptomatic  2   0   0.9;
+place work  10  0 0.01;             bedridden    2   0   0.9;
+role everybody 100 home work (9-17 0.4);
+end 30;

@@ -1,0 +1,1970 @@
+# You may have to edit this file to delete header lines produced by
+# mailers or news systems from this file (all lines before these shell
+# comments you are currently reading).
+
+# Shell archive made by dwjones on Tue 20 Apr 2021 01:14:05 PM CDT
+
+# To install this software on a UNIX system:
+#  1) create a directory (e.g. with the shell command mkdir stuff)
+#  2) change to that directory (e.g. with the command cd stuff),
+#  3) direct the remainder of this text to sh (e.g. sh < ../savedmail).
+# This will make sh create files in the new directory; it will do
+# nothing else (if you're paranoid, you should scan the following text
+# to verify this before you follow these directions).  Then read README
+# in the new directory for additional instructions.
+cat > README <<\xxxxxxxxxx
+EPIDEMIC SIMULATOR
+==================
+
+Author:  Douglas W. Jones
+Version: Apr. 20, 2021
+
+The code in this directory includes a solution to Machine Problem 11 from
+CS:2820 at the University of Iowa.
+
+This epidemic simulator takes an input file containing a description of the
+places in a community, the roles fulfilled by the population of that community
+and the nature of the disease.  The output is a CSV file showing the progress
+of the disease through the community.
+
+Files
+-----
+
+This directory contains the following source files for the epidemic simulator:
+
+* Error.java		error reporting framework
+* MyScanner.java	Wrapper around java.util.scanner
+* Check.java		Utility to do sanity checks on values
+* MyRandom.java		Extensions to Java.util.random
+* Simulator.java	Simulation framework
+* Time.java		Definitions of time units
+
+* InfectionRule.java	How do stages of the infection progress
+* Schedule.java		How do people decide to move from place to place
+* Person.java		How does each person behave, also population statistics
+* Place.java		How does each place work
+* PlaceKind.java	What kinds of places are there
+* Role.java		What kinds of roles to people fit into
+
+* Epidemic.java		the main program
+
+The following additional files are included
+
+* README		this file
+* Makefile              instructions for building and running the simulator
+
+* testa			test input, workers spread disease between families
+* testb			test input, everyone works sometimes, spreading it
+* testc			test input, two compartment, everyone has brief contact
+* testd			test input, two compartment, fewer extended contacts
+
+Instructions
+------------
+
+To build the epidemic simulator, use this shell command
+
+	make
+
+To make a web site of documentation from the javadoc comments in the code
+
+        make html
+
+To clean up files that were created by make
+
+        make clean
+
+To test or demonstrate the simulator, use one of these shell commands
+
+	make demo	# equivalent to java Epidemic testa
+
+	java Epidemic testa
+	java Epidemic testb
+	java Epidemic testc
+	java Epidemic testd
+
+Tests A and B should produce very similar results as a wave of infection
+sweeps through the community until everyone has either recovered or died of
+the simulated disease.
+
+Tests C and D are bi-stable; they involve places named earth and mars, where
+people from those planets travel to the moon and make brief contact.
+Sometimes, the epidemic fails to spread between planets, sometimes, it
+jumps the gap between planets and sweeps through both.
+
+Tests A and C involve people following fixed schedules, while tests B and D
+involve schedules with random elements, where the random elements have been
+adjusted so that test B produces output similar to test A and D similar to C.
+xxxxxxxxxx
+cat > Epidemic.java <<\xxxxxxxxxx
+// Epidemic.java
+
+import java.io.File;
+import java.io.FileNotFoundException;
+
+/** The main class of an epidemic simulator.
+ *  <p>This class should never be instantiated.
+ *  It is just a container for the main method and its (private) support code.
+ *  <p>Input items in the model description
+ *  begin with one of the following keywords:
+ *  <br><tt>population</tt>, an integer and a semicolon
+ *  <br><tt>infected</tt>, an integer and a semicolon
+ *  <br><tt>latent</tt> followed by an <code>InfectionRule</code>
+ *  <br><tt>asymptomatic</tt> followed by an <code>InfectionRule</code>
+ *  <br><tt>symptomatic</tt> followed by an <code>InfectionRule</code>
+ *  <br><tt>bedridden</tt> followed by an <code>InfectionRule</code>
+ *  <br><tt>end</tt> followed by a time (in days) and a semicolon
+ *  <br><tt>role</tt> followed by a <code>role</code>
+ *  <br><tt>place</tt> followed by a <code>placeKind</code>
+ *  <p>Most of the input parsing is done by the constructor for the
+ *  indicated object, where the class is listed above.  Each item ends with
+ *  a semicolon, so multiple items may be listed on a line and items may
+ *  be broken over multiple lines.  A model may include any number of
+ *  role and place specifications.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved Javadoc comments
+ *  @see MyScanner
+ *  @see InfectionRule
+ *  @see Role
+ *  @see PlaceKind
+ *  @see Person
+ *  @see Simulator
+ */
+public class Epidemic {
+
+    /** Read and process the details of the model from an input stream.
+     *  @param in    the stream to read from
+     */
+    private static void buildModel( MyScanner in ) {
+	int pop = 0;      // the population of the model, 0 = uninitialized
+	int infected = 0; // number initially infected, 0 = uninitialized
+	double endOfTime = 0.0;  // 0.0 = uninitialized
+
+	// rules describing the progress of the infection
+	InfectionRule latent = null;
+	InfectionRule asymptomatic = null;
+	InfectionRule symptomatic = null;
+	InfectionRule bedridden = null;
+
+	while ( in.hasNext() ) { // scan the input file
+
+	    // each item begins with a keyword
+	    String keyword = in.getNextName( "???", ()-> "keyword expected" );
+	    if ("population".equals( keyword )) {
+		int p = Check.posIntSemicolon( in, ()-> "population" );
+		if (pop != 0) {
+		    Error.warn( "population specified more than once" );
+		} else {
+		    pop = p;
+		}
+	    } else if ("infected".equals( keyword )) {
+		int i = Check.posIntSemicolon( in, ()-> "infected" );
+		if (infected != 0) {
+		    Error.warn( "infected specified more than once" );
+		} else {
+		    infected = i;
+		}
+	    } else if ("latent".equals( keyword )) {
+		if (latent != null) {
+		    Error.warn( "latency time specified more than once" );
+		}
+		latent = new InfectionRule( in, ()-> "latent" );
+	    } else if ("asymptomatic".equals( keyword )) {
+		if (asymptomatic != null) {
+		    Error.warn( "asymptomatic time specified more than once" );
+		}
+		asymptomatic = new InfectionRule( in, ()-> "asymptomatic" );
+	    } else if ("symptomatic".equals( keyword )) {
+		if (symptomatic != null) {
+		    Error.warn( "symptomatic time specified more than once" );
+		}
+		symptomatic = new InfectionRule( in, ()-> "symptomatic" );
+	    } else if ("bedridden".equals( keyword )) {
+		if (bedridden != null) {
+		    Error.warn( "bedridden time specified more than once" );
+		}
+		bedridden = new InfectionRule( in, ()-> "bedridden" );
+	    } else if ("end".equals( keyword )) {
+		final double et = in.getNextFloat( 1.0F,
+		    ()-> "time: end time missing"
+		);
+		in.getNextLiteral(
+		    MyScanner.semicolon, ()-> "end " + et + ": missing ;"
+		);
+		Check.positive( et, 0.0F,
+		    ()-> "end " + et + ": negative end time?"
+		);
+		if (endOfTime > 0.0) {
+		    Error.warn( "end " + et + ": duplicate end time" );
+		} else {
+		    endOfTime = et;
+		}
+	    } else if ("role".equals( keyword )) {
+		new Role( in );
+	    } else if ("place".equals( keyword )) {
+		new PlaceKind( in );
+	    } else if (keyword == "???") { // there was no keyword
+		// == is allowed here 'cause we're detecting the default value
+		// we need to advance the scanner here or we'd stick in a loop
+		if (in.hasNext()) in.next();
+	    } else { // none of the above
+		Error.warn( "not a keyword: " + keyword );
+	    }
+	}
+
+	// check that all required fields are filled in
+
+	if (pop == 0)             Error.warn( "population not given" );
+	if (latent == null)       Error.warn( "latency time not given" );
+	if (asymptomatic == null) Error.warn( "asymptomatic time not given" );
+	if (symptomatic == null)  Error.warn( "symptomatic time not given" );
+	if (bedridden == null)    Error.warn( "bedridden time not given" );
+	if (endOfTime == 0.0)     Error.warn( "end of time not given" );
+
+	Error.exitIfWarnings( "Aborted due to errors in input" );
+
+	Person.setDiseaseParameters(
+	    latent, asymptomatic, symptomatic, bedridden
+	);
+
+	Simulator.schedule( // schedule the end of time
+	    endOfTime * Time.day, (double t)-> System.exit( 0 )
+	);
+
+	// Role is responsible for figuring out how many people per role
+	Role.populateRoles( pop, infected );
+    }
+
+    /** The main method.
+     *  <p>Most of this code is entirely about command line argument processing.
+     *  It builds the model and then starts the simulation.
+     *  <p>One command line argument is mandatory, name of the file
+     *  holding the model description.
+     *  @param args  the command line arguments
+     */
+    public static void main( String[] args ) {
+	if (args.length < 1) Error.fatal( "missing file name" );
+	if (args.length > 1) Error.warn( "too many arguments: " + args[1] );
+	try {
+	    buildModel( new MyScanner( new File( args[0] ) ) );
+	    // Person.printAll();    // BUG:  potentially useful for debugging
+	    Person.startReporting( true ); // start the results report
+	    Simulator.run();               // and simulate
+	} catch ( FileNotFoundException e ) {
+	    Error.fatal( "could not open file: " + args[0] );
+	}
+    }
+}
+xxxxxxxxxx
+cat > Time.java <<\xxxxxxxxxx
+// Time.java
+
+/** All about simulated time
+ *  @author Douglas W. Jones
+ *  @version Apr. 6, 2021 lifted from Epidemic.java of that date
+ */
+public class Time {
+    /** one second of simulated time */
+    public static double second = 1.0F;
+
+    /** one minute of simulated time */
+    public static double minute = 60.0F * second;
+
+    /** one hour of simulated time */
+    public static double hour = 60.0F * minute;
+
+    /** one day of simulated time */
+    public static double day = 24.0F * hour;
+}
+xxxxxxxxxx
+cat > Schedule.java <<\xxxxxxxxxx
+// Schedule.java
+
+/** Tuple of start and end times used for scheduling people's visits to places
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 better Javadoc comments
+ *  @see Person
+ *  @see Place
+ *  @see MyScanner for the tools used to read schedules
+ *  @see Error for the tools used to report errors in schedules
+ *  @see Check for the tools used to check sanity of numbers in schedules
+ *  @see Simulator for the tools used to schedule activity under schedules
+ *  @see MyRandom for the tools used to assure randomness
+ */
+public class Schedule {
+    // instance variables
+    private final double startTime; // times are in seconds anno midnight
+    private final double duration;  // duration of visit
+    private final double likelihood;// probability this visit will take place
+
+    // source of randomness
+    static final MyRandom rand = MyRandom.stream;
+
+    /** Construct a new Schedule.
+     *  <p>The Sysntax of a schedule is <code>(0.0-0.0 0.0)</code>
+     *  <p>This means <code>(startTime-endTime probability)</code>
+     *  <p>That is, a person following this schedule will go to some place
+     *  at <code>startTime</code>, stay there until <code>endTime</code>
+     *  but they will only ravel with the indicated <code>probability</code>d
+     *  on any particular day.
+     *  <p>The begin paren must just have been scanned from the input stream
+     *  before the constructor call.
+     *  @param in  the input stream
+     *  @param context  the context for error messages
+     */
+    public Schedule( MyScanner in, MyScanner.Message context ) {
+
+	// get start time of schedule
+	final double st = in.getNextFloat(
+	    23.98F, ()-> context.myString() + "(: not followed by start time"
+	);
+	in.getNextLiteral(
+	    MyScanner.dash, ()-> context.myString() + "(" + st
+						    + ": not followed by -"
+	);
+	// get end time of schedule
+	final double et = in.getNextFloat(
+	    23.99F, ()-> context.myString() + "(" + st
+					    + "-: not followed by end time"
+	);
+
+	final double lh; // likelihood of move taking place
+	if (!in.tryNextLiteral( MyScanner.endParen )) {
+	    lh = in.getNextFloat(
+		0.0, ()-> context.myString() + "(" + st + '-' + et
+					     + "-: not followed by likelihood"
+	    );
+	    
+	    in.getNextLiteral(
+		MyScanner.endParen,
+		()-> context.myString() + "(" + st + "-" + et + " " + lh
+					+ ": not followed by )"
+	    );
+	} else {
+	    lh = 1.0;
+	}
+
+	// check sanity constraints on schedule
+	if (st >= 24.00F) {
+	    Error.warn(
+		context.myString() + "(" + st + "-" + et
+				   + "): start time is tomorrow"
+	    );
+	}
+	Check.nonNeg( st, 0.0F,
+	    ()-> context.myString() + "(" + st + "-" + et
+				    + "): start time is yesterday"
+	);
+	if (st >= et) {
+	    Error.warn(
+		context.myString() + "(" + st + "-" + et
+				   + "): times out of order"
+	    );
+	}
+	Check.nonNeg( lh, 0.0F,
+	    ()-> context.myString() + "(" + st + "-" + et + " " + lh
+				    + "): likelihood cannot be negative"
+	);
+	if (lh > 1.0) {
+	    Error.warn(
+		context.myString() + "(" + st + "-" + et + " " + lh
+				   + "): likelihood cannot be over 1.0"
+	    );
+	}
+	startTime = st * Time.hour;
+	duration = (et * Time.hour) - startTime;
+	likelihood = lh;
+    }
+
+    /** Compare two schedules to see if they overlap.
+     *  @param s  the schedule to compare with
+     *  @return true if they overlap, false otherwise
+     */
+    public boolean overlap( Schedule s ) {
+	if (s == null) return false;
+	double thisEnd = this.startTime + this.duration;
+	if (this.startTime <= s.startTime) {
+	    if (s.startTime <= (this.startTime + this.duration)) return true;
+	}
+	double sEnd = s.startTime + s.duration;
+	if (s.startTime <= this.startTime) {
+	    if (this.startTime <= (s.startTime + s.duration)) return true;
+	}
+	return false;
+    }
+
+    /** Commit a person to following a schedule regarding a place.
+     *  <p>This starts the logical process of making a person follow
+     *  this schedule.
+     *  @param person  the person to commit
+     *  @param place   the schedule that person will follow
+     */
+    public void apply( Person person, Place place ) {
+	Simulator.schedule( startTime, (double t)-> go( t, person, place ) );
+    }
+
+    /** Keep a person on schedule.
+     *  <p>This is a schedulable event service routine.
+     *  <p>This continues the logical process of moving a person according
+     *  to this schedule.
+     *  @param person
+     *  @param place
+     */
+    private void go( double time, Person person, Place place ) {
+	double tomorrow = time + Time.day;
+
+	// first, ensure that we keep following this schedule
+	Simulator.schedule( tomorrow, (double t)-> go( t, person, place ) );
+
+	if (rand.nextFloat() < likelihood) {
+	    // second, make the person go there if they take the trip
+	    person.travelTo( time, place );
+
+	    // third, make sure we get home if we took the trip
+	    Simulator.schedule(
+		time + duration, (double t)-> person.goHome( t )
+	    );
+	}
+    }
+
+    /** Convert a Schedule back to textual form.
+     *  <p>Useful largely during debugging when it is useful to
+     *  reconstruct the simulator input to see if it was read correctly.
+     *  @return the schedule as a string
+     *  @see Schedule for syntax details
+     */
+    public String toString() {
+	return "(" + startTime/Time.hour
+	     + "-" + (startTime + duration) / Time.hour
+	     + " " + likelihood + ")";
+    }
+}
+xxxxxxxxxx
+cat > PlaceKind.java <<\xxxxxxxxxx
+// PlaceKind.java
+
+import java.util.Collections;
+import java.util.LinkedList;
+
+/** Categories of places.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved Javadoc comments
+ *  @see Place
+ *  @see MyRandom
+ *  @see MyScanner
+ */
+public class PlaceKind {
+
+    // linkage from person to associated place involves a schedule
+    private class PersonSchedule {
+	public Person person;
+	public Schedule schedule;
+	public PersonSchedule( Person p, Schedule s ) {
+	    person = p;
+	    schedule = s;
+	}
+    }
+
+    // instance variables from the input
+    final String name;     // the name of this category of place
+    private double median; // median population for this category
+    private double scatter;// scatter of size distribution, reduces to sigma
+    private double transmissivity;  // how likely is disease transmission here
+
+    // instance variables developed during model elaboration
+    private double sigma;  // sigma of the log normal population distribution
+    private Place unfilledPlace = null; // a place of this kind being filled
+    private int unfilledCapacity = 0;   // capacity of unfilledPlace
+
+    // a list of all the people associated with this kind of place
+    private final LinkedList<PersonSchedule> people = new LinkedList<>();
+
+    // static variables used for categories of places
+    private static LinkedList<PlaceKind> allPlaceKinds = new LinkedList<>();
+    private static final MyRandom rand = MyRandom.stream();
+
+    /** Scan a new place category from an input stream.
+     *  <p>The stream must contain the following fields, in order:
+     *  <br>* the category name
+     *  <br>* the median size of each place in this category
+     *  <br>* the scatter of place sizes (assuming a log-normal distribution)
+     *  <br>* the infectivity of the place
+     *  <br>* a semicolon
+     *  <p>Infectivity is measure in infections per hour per infected person
+     *  in that place.
+     *  @param in  the input stream
+     */
+    public PlaceKind( MyScanner in ) {
+
+	name = in.getNextName( "???", ()->"place with no name" );
+	median = in.getNextFloat(
+	    9.9999F,
+	    ()-> "place " + name + ": not followed by median"
+	);
+	scatter = in.getNextFloat(
+	    9.9999F,
+	    ()-> "place " + name + " " + median + ": not followed by scatter"
+	);
+	transmissivity = (1/Time.hour) * in.getNextFloat(
+	    9.9999F,
+	    ()-> "place " + name + " " + median + " " + scatter
+	       + ": not followed by transmissivity"
+	); // BUG: conversion factors this is given in per hour!!!
+	in.getNextLiteral(
+	    MyScanner.semicolon,
+	    ()->this.describe() + ": missing semicolon"
+	);
+
+	// complain if the name is not unique
+	if (findPlaceKind( name ) != null) {
+	    Error.warn( this.describe() + ": duplicate name" );
+	}
+	// force the median to be positive
+	median = Check.positive( median, 1.0F,
+	    ()-> this.describe() + ": non-positive median?"
+	);
+	// force the scatter to be positive or zero
+	scatter = Check.nonNeg( scatter, 0.0F,
+	    ()-> this.describe() + ": negative scatter?"
+	);
+	// force the transmissivity to be positive or zero
+	transmissivity = Check.nonNeg( transmissivity, 0.0F,
+	    ()-> this.describe() + ": negative scatter?"
+	);
+
+	sigma = Math.log( (scatter + median) / median );
+	allPlaceKinds.add( this ); // include this in the list of all
+    }
+
+    /** Produce a reasonable textual description of this place.
+     *  <p>This is used to create context for error messages.
+     *  @return the description
+     */
+    private String describe() {
+	return "place " + name + " " + median + " " + scatter
+	     + " " + transmissivity;
+    }
+
+    /** Find or make a place of a particular kind.
+     *  <p>This should be called when a person is to be linked to a place
+     *  of some particular kind, potentially occupying a space in that place.
+     *  @return a place that is an instance of the indicated kind
+     */
+    private Place findPlace() {
+	if (unfilledCapacity <= 0 ) { // need to make a new place
+	    // make new place using a log-normal distribution for the size
+	    unfilledCapacity
+		= (int)Math.round( rand.nextLogNormal( median, sigma) );
+	    unfilledPlace = new Place( this, transmissivity );
+	}
+	unfilledCapacity = unfilledCapacity - 1;
+	return unfilledPlace;
+    }
+
+    /** Add a person to the population of this kind of place.
+     *  <p>The entire population of the place kind must be created before
+     *  any person can be associated with a particular place of that kind.
+     *  @param p the new person
+     *  @param s the associated schedule
+     */
+    public void populate( Person p, Schedule s ) {
+	people.add( new PersonSchedule( p, s ) );
+    }
+
+    /** Distribute the people from all PlaceKinds to their individual places.
+     *  <p>Prior to this, each place kind knows all the people that will be
+     *  associated with places of that kind, a list constructed by calls to
+     *  <code>populate()</code>.
+     *  This calls <code>findPlace</code> to create or find places.
+     */
+    public static void distributePeople() {
+
+	// for each kind of place
+	for (PlaceKind pk: allPlaceKinds) {
+	    // shuffle its people to break correlations from people to places
+	    Collections.shuffle( pk.people, MyRandom.stream );
+
+	    // for each person, associate that person with a specific place
+	    for (PersonSchedule ps: pk.people) {
+		ps.person.emplace( pk.findPlace(), ps.schedule );
+	    }
+	}
+    }
+
+    /** Find a category of place, by name.
+     *  <p>Used to prevent duplicate definitions and to look up place names
+     *  when roles are created that are associated with the place.
+     *  @param n  the name of the category
+     *  @return the PlaceKind with that name, or null if none has been defined
+     */
+    public static PlaceKind findPlaceKind( String n ) {
+	for (PlaceKind pk: allPlaceKinds) {
+	    if (pk.name.equals( n )) return pk;
+	}
+	return null; // category not found
+    }
+}
+xxxxxxxxxx
+cat > Place.java <<\xxxxxxxxxx
+// Place.java
+
+import java.util.LinkedList;
+
+/** Places that people are associate with and may occupy.
+ *  <p>Every place is an instance of some <code>PlaceKind</code>.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved Javadoc comments
+ *  @see PlaceKind for most of the attributes of places
+ */
+public class Place {
+
+    // instance variables fixed at creation
+
+    /** What kind of place is this? */
+    public final PlaceKind kind;
+
+    // how dangerous is it to stay here?
+    private final double transmissivity;
+
+    // instance variables that vary with circumstances
+
+    // how many infectious people are here
+    private int contageous = 0;
+
+    // who is currently in this place?
+    private final LinkedList<Person> occupants = new LinkedList<>();
+
+    /** Construct a new place.
+     *  @param k  the kind of place
+     *  @param t  the transmissivity of the place
+     */
+    public Place( PlaceKind k, Double t ) {
+	kind = k;
+	transmissivity = t;
+    }
+
+    /** Make a person arrive at a place.
+     *  <p>This is a schedulable event service routine.
+     *  @param time when the arrival happens
+     *  @param p the person involved
+     */
+    void arrive( double time, Person p ) {
+	if (p.isContageous()) contageous( time, +1 );
+	occupants.add( p );
+    }
+
+    /** Make a person depart from a place.
+     *  <p>This is a schedulable event service routine.
+     *  @param time when the departure happens
+     *  @param p the person involved
+     */
+    void depart( double time, Person p ) {
+	occupants.remove( p );
+	if (p.isContageous()) contageous( time, -1 );
+    }
+
+    /** Signal that a person in this place has changed their contageon state.
+     *  <p>This is a schedulable event service routine but
+     *  It is more likely to be called directly from other
+     *  event service routines.  It is called when a person arrives or
+     *  departs from a place, and also when a person in some place
+     *  becomes contageous, recovers or dies.
+     *  @param time at which contageon change happens
+     *  @param c, +1 means one more is contageous, -1 means one less.
+     */
+    void contageous( double time, int c ) {
+	contageous = contageous + c;
+
+	// when the number of contageous people in a place changes,
+	for (Person p: occupants) {
+	    p.scheduleInfect( time, 1 / (contageous * transmissivity) );
+	}
+    }
+}
+xxxxxxxxxx
+cat > Role.java <<\xxxxxxxxxx
+// Role.java
+
+import java.util.LinkedList;
+
+/** People in the simulated community each have a role.
+ *  <p>Roles create links from people to the categories of places they visit
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 better Javadoc comments
+ *  @see Person
+ *  @see PlaceSchedule
+ *  @see MyRandom
+ *  @see MyScanner
+ */
+public class Role {
+
+    // linkage from role to associated place involves a schedule
+    private class PlaceSchedule {
+	public PlaceKind placeKind;
+	public Schedule schedule;
+	public PlaceSchedule( PlaceKind p, Schedule s ) {
+	    placeKind = p;
+	    schedule = s;
+	}
+    }
+
+    // instance variables
+
+    /** The name of this role */
+    public final String name;
+
+    // the list of all of the kinds of places associated with this role
+    private final LinkedList<PlaceSchedule> placeKinds = new LinkedList<>();
+
+    private double fraction;  // fraction of the population in this role
+    private int number;       // number of people in this role
+
+    // static variables used for summary of all roles
+    private static double sum = 0.0F; // sum of all the fractions
+    private static LinkedList<Role> allRoles = new LinkedList<Role>();
+
+    /** Scan the description of a new role from some input stream
+     *  <p>The stream must contain the following items, in order:
+     *  <br>* the role name
+     *  <br>* the fraction of the population in that role
+     *  <br>* a list of the places associated with that role
+     *  <br>* a semicolon
+     *  <p>Each place should either be
+     *  <br>* the name of the home &ndash; each person has just one home
+     *  <br>* some other place name, followed by a <code>schedule</code>
+     *  @param in   the input stream
+     *  @see Schedule
+     */
+    public Role( MyScanner in ) {
+	PlaceKind homePlaceKind = null; // the home place for this role
+
+	name = in.getNextName( "???", ()-> "role with no name" );
+	fraction = in.getNextFloat(
+	    9.9999F, ()-> "role " + name + ": not followed by population"
+	);
+
+	// get the list of places associated with this role
+	boolean hasNext = in.hasNext(); // needed below for missing semicolon
+	while (hasNext && !in.tryNextLiteral( MyScanner.semicolon )) {
+
+	    String placeName = in.getNextName( "???",
+		()->"role " + name + " " + fraction + ": place name expected"
+	    );
+	    PlaceKind pk = PlaceKind.findPlaceKind( placeName );
+	    Schedule s = null;
+
+	    // is placeName followed a schedule?
+	    if (in.tryNextLiteral( MyScanner.beginParen )) {
+		s = new Schedule( in, ()-> this.describe() + " " + placeName );
+	    }
+
+	    // was it a real place name?
+	    if (pk == null) {
+		Error.warn(
+		    this.describe() + " " + placeName + ": undefined place?"
+		);
+	    }
+
+	    // see if this role is already associated with PlaceKind pk
+	    boolean duplicated = false;
+	    boolean overlap = false;
+	    if (pk != null) {
+		if (pk == homePlaceKind) duplicated = true;
+		for (PlaceSchedule ps: placeKinds) {
+		    if (ps.placeKind == pk) duplicated = true;
+		    if ((ps.schedule != null) && (ps.schedule.overlap(s))) {
+			overlap = true;
+		    }
+		}
+	    }
+	    if (duplicated) {
+		Error.warn(
+		    this.describe() + " " + placeName + ": place name reused?"
+		);
+	    } else if (overlap) {
+		Error.warn(
+		    this.describe() + " " + placeName + ": schedule overlap?"
+		);
+	    } else { // only record non-duplicate entries
+		placeKinds.add( new PlaceSchedule( pk, s ) );  // schedule all
+		if (s == null) {
+		    if (homePlaceKind != null) Error.warn(
+			this.describe() + " " + placeName + ": a second home?"
+		    );
+		    homePlaceKind = pk;
+		}
+	    }
+	    hasNext = in.hasNext();
+	}
+	if (!hasNext) Error.warn( this.describe() + ": missing semicolon?" );
+
+	// complain if the name is not unique
+	if (findRole( name ) != null) {
+	    Error.warn( this.describe() + ": role name reused?" );
+	}
+	// force the fraction or population to be positive
+	fraction = Check.positive( fraction, 0.0F,
+	    ()-> this.describe() + ": negative population?"
+	);
+	sum = sum + fraction;
+
+	// complain if no places for this role
+	if (homePlaceKind == null) {
+	    Error.warn( this.describe() + ": no home specified?" );
+	}
+	if (placeKinds.isEmpty()) {
+	    Error.warn( this.describe() + ": has no places?" );
+	}
+
+	allRoles.add( this ); // include this role in the list of all roles
+    }
+
+    /** Produce a reasonably full textual description of this role.
+     *  <p>This is common code used to produce context for error messages.
+     *  @return the description
+     */
+    private String describe() {
+	return "role " + name + " " + fraction;
+    }
+
+    /** Find a role, by name.
+     *  <p>Used to prevent duplicate definition of roles.
+     *  As it turns out, there is no case where roles need to be looked up
+     *  by name except to prevent duplication.
+     *  @param n  the name of the role
+     *  @return the role with that name, or null if none has been defined
+     */
+    private static Role findRole( String n ) {
+	for (Role r: allRoles) {
+	    if (r.name.equals( n )) return r;
+	}
+	return null; // role not found
+    }
+
+    /** Create the total population, divided up by roles.
+     *  <p>Only after all roles have been defined should this be called in
+     *  order to actually populate the roles.
+     *  <p>In addition to creating people to fill the roles, this code
+     *  tells the associated places about the people that live there or
+     *  will visit.  This is done in two steps, first sending people to
+     *  categories of places, and then populating the specific places.
+     *  The division is needed in order to randomize which specific place
+     *  in each category gets visited by each person.
+     *  @param population  the total population to be created
+     *  @param infected  the total number of initially infected people
+     *  @see Person
+     *  @see PlaceKind
+     */
+    public static void populateRoles( int population, int infected ) {
+	int pop = population; // working copy used only in infection decisions
+	int inf = infected;   // working copy used only in infection decisions
+	final MyRandom rand = MyRandom.stream;
+
+	if (allRoles.isEmpty()) Error.fatal( "no roles specified" );
+	for (Role r: allRoles) {
+	    // how many people are in this role
+	    r.number = (int)Math.round( (r.fraction / r.sum) * population );
+
+	    // make that many people and infect the right number at random
+	    for (int i = 0; i < r.number; i++) {
+		Person p = new Person( r );
+
+		// the ratio inf/pop is probability this person is infected
+		if (rand.nextFloat() < ((float)inf / (float)pop)) {
+		    p.infect( 0.0 );
+		    inf = inf - 1;
+		}
+		pop = pop - 1;
+
+		// each person is associated all their role's place kinds
+		// note that this does not create places yet
+		for (PlaceSchedule ps: r.placeKinds) {
+		    ps.placeKind.populate( p, ps.schedule );
+		}
+	    }
+	}
+
+	// finish putting people in their places
+	// this actually creates the places and puts people in them
+	PlaceKind.distributePeople();
+    }
+}
+xxxxxxxxxx
+cat > Person.java <<\xxxxxxxxxx
+// Person.java
+
+import java.util.LinkedList;
+
+/** People are the central actors in the simulation.
+ *  @author Douglas W. Jones
+ *  @version Apr. 16, 2021 cleaner code for population statistics
+ *  @see Role for the roles people play
+ *  @see Place for the places people visit
+ *  @see MyRandom for the source of randomness
+ */
+public class Person {
+
+    private static enum DiseaseStates {
+	uninfected,
+	latent,
+	asymptomatic,  //
+	symptomatic,   //  These 3 states are defined as contageous
+	bedridden,     //
+	recovered,
+	dead; // this must be the last state
+	// note that the order of the above enumeration defines the order
+	// of the fields of the CSV file output by the simulator.
+
+	int pop = 0; // each disease state has a population
+    }
+
+    // timing characteristics of disease state
+    private static InfectionRule latent;
+    private static InfectionRule asymptomatic;
+    private static InfectionRule symptomatic;
+    private static InfectionRule bedridden;
+
+    /** Set the disease parameters for the disease states.
+     *  <p>This must be called once before simulation starts.
+     *  @param l   the infection rule for disease latency
+     *  @param a   the infection rule for the asymptomatic phase
+     *  @param s   the infection rule for the symptomatic phase
+     *  @param b   the infection rule for the bedridden phase
+     */
+    public static void setDiseaseParameters(
+	InfectionRule l, InfectionRule a, InfectionRule s, InfectionRule b
+    ) {
+	latent = l;
+	asymptomatic = a;
+	symptomatic = s;
+	bedridden = b;
+    }
+
+    // linkage from person to place involves a schedule
+    private class PlaceSchedule {
+	public Place place;
+	public Schedule schedule;
+	public PlaceSchedule( Place p, Schedule s ) {
+	    place = p;
+	    schedule = s;
+	}
+    }
+
+    // instance variables created from model description
+    private final Role role;      // role of this person
+    private Place home;           // this person's home place, set by emplace
+    private final LinkedList<PlaceSchedule> places = new LinkedList<>();
+
+    // instance variables that change as simulation progressses
+    private DiseaseStates diseaseState = DiseaseStates.uninfected;
+    private Place location;	       // initialized by emplace
+    private double infectMeTime = 0.0; // time I will get infected
+	// for the above, the default 0.0 allows for infection at startup
+
+    // static variables used for all people
+    private static LinkedList<Person> allPeople = new LinkedList<Person>();
+    private static MyRandom rand = MyRandom.stream;
+
+    /** Construct a new person to perform some role
+     *  <p>This constructor deliberately defers putting people in any places.
+     *  For each constructed person <code>p</code>, a call must be made to
+     *  <code>p.emplace(place,schedule)</code> before simulation begins.
+     *  The separation between constructing people and emplacing them allows
+     *  for shuffling the set of people in order to randomize the places into
+     *  which they fall.
+     *  @param r  the role of this person
+     */
+    public Person( Role r ) {
+	role = r;
+
+	allPeople.add( this ); // include this person in the list of all
+
+	diseaseState.pop ++;   // keep the population statistics up to date
+    };
+
+    // methods used during model construction, at time 0.0
+
+    /** Associate this person with a particular place and schedule.
+     *  <p>Each person must be emplaced before simulation begins.
+     *  Emplacing a pereson commits that person to visiting the place
+     *  according to the given schedule, and it also places the person
+     *  in a home place identified by a null schedule.
+     *  @param p  the place
+     *  @param s  the associated schedule
+     */
+    public void emplace( Place p, Schedule s ) {
+	if (s != null) {
+	    places.add( new PlaceSchedule( p, s ) );
+	    s.apply( this, p ); // commit to following schedule s for place p
+	} else {
+	    assert home == null: "Role guarantees only one home place";
+	    home = p;
+	    location = home;
+
+	    location.arrive( 0.0, this ); // tell location about new occupant
+	}
+    }
+
+    // state query
+
+    /** Is this person contageous?
+     *  <p>A person is defined as being contageous if they are in any disease
+     *  state between <code>asymptomatic</code> and <code>bedridden</code>
+     *  inclusive.
+     *  @return true if they are
+     */
+    public boolean isContageous() {
+	return
+	    (diseaseState.compareTo( DiseaseStates.asymptomatic ) >= 0)
+	 && (diseaseState.compareTo( DiseaseStates.bedridden ) <= 0);
+    }
+
+    // simulation of behavior
+
+    /** Schedule the time at which a person will be infected.
+     *  <p>This may be used to reschedule infection for someone who was
+     *  previously scheduled to be infected at a different time.
+     *  The actual delay until infection is randomized based on the mean
+     *  delay provided.
+     *  @param time  the current time
+     *  @param meanDelay  the mean delay until infection
+     */
+    public void scheduleInfect( double time, double meanDelay ) {
+	if (diseaseState == DiseaseStates.uninfected) { // irrelevant if not
+	    double delay = rand.nextExponential( meanDelay );
+	    infectMeTime = time + delay;
+	    Simulator.schedule( infectMeTime, (double t)-> infect( t ) );
+	}
+    }
+
+    /** Infect this person.
+     *  <p>This is a schedulable event service routine.
+     *  <p>This may be called on a person in any infection state but it only
+     *  moves the person to <code>latent</code> if they are currently.
+     *  <code>uninfected</code>.  
+     *  @param time the time of infection
+     */
+    public void infect( double time ) {
+	if (   (diseaseState == DiseaseStates.uninfected) // no reinfection
+	    && (infectMeTime == time )                     // if not rescheduled
+	) {
+	    final double duration = latent.duration();
+
+	    // update population statistics
+	    diseaseState.pop--;
+	    diseaseState = DiseaseStates.latent;
+	    diseaseState.pop++;
+
+	    if (latent.recover()) {
+		Simulator.schedule( time + duration, (double t)->recover( t ) );
+	    } else {
+		Simulator.schedule(
+		    time + duration, (double t)-> beContageous( t )
+		);
+	    }
+	}
+    }
+
+    /** This person becomes contageous and asymptomatic.
+     *  <p>This is a schedulable event service routine.
+     *  <p>This may only be called on a person in with a <code>latent</code>
+     *  infection and makes the person <code>asymptomatic</code>.
+     *  @param time   the time of this state change
+     */
+    public void beContageous( double time ) {
+	assert diseaseState == DiseaseStates.latent : "not latent";
+	final double duration = asymptomatic.duration();
+
+	// update population statistics
+	diseaseState.pop--;
+	diseaseState = DiseaseStates.asymptomatic;
+	diseaseState.pop++;
+
+	// tell place that I'm sick
+	if (location != null) location.contageous( time, +1 );
+
+	if (asymptomatic.recover()) {
+	    Simulator.schedule( time + duration, (double t)-> recover( t ) );
+	} else {
+	    Simulator.schedule( time + duration, (double t)-> feelSick( t ) );
+	}
+    }
+
+    /** This person is contageous and starts feeling sick.
+     *  <p>This is a schedulable event service routine.
+     *  <p>This may only be called on a person in with an
+     *  <code>asymptomatic</code> infection and makes them
+     *  <code>symptomatic</code>.
+     *  makes the person symptomatic.
+     *  @param time  the time of this state change
+     */
+    public void feelSick( double time ) {
+	assert diseaseState == DiseaseStates.asymptomatic: "not asymptomatic";
+	final double duration = symptomatic.duration();
+
+	// update population statistics
+	diseaseState.pop--;
+	diseaseState = DiseaseStates.symptomatic;
+	diseaseState.pop++;
+
+	if (symptomatic.recover()) {
+	    Simulator.schedule( time + duration, (double t)-> recover( t ) );
+	} else {
+	    Simulator.schedule( time + duration, (double t)-> goToBed( t ) );
+	}
+    }
+
+    /** This person is contageous and feels so bad they go to bed.
+     *  <p>This is a schedulable event service routine
+     *  <p>This may only be called on a person in with a
+     *  <code>symptomatic</code> infection and makes the person
+     *  <code>bedridden</code>.
+     *  @param time  the time of this state change
+     */
+    public void goToBed( double time ) {
+	assert diseaseState == DiseaseStates.symptomatic: "not symptomatic";
+	final double duration = bedridden.duration();
+
+	// update population statistics
+	diseaseState.pop--;
+	diseaseState = DiseaseStates.bedridden;
+	diseaseState.pop++;
+
+	if (symptomatic.recover()) {
+	    Simulator.schedule( time + duration, (double t)-> recover( t ) );
+	} else {
+	    Simulator.schedule( time + duration, (double t)-> die( t ) );
+	}
+    }
+
+    /** This person gets better.
+     *  <p>This is a schedulable event service routine.
+     *  <p>This may be called on a person in any disease state
+     *  and leaves the person <code>recovered</code>
+     *  and immune from further infection.
+     *  @param time   the time of this state change
+     */
+    public void recover( double time ) {
+	// update population statistics
+	diseaseState.pop--;
+	diseaseState = DiseaseStates.recovered;
+	diseaseState.pop++;
+
+	if (location != null) location.contageous( time, -1 );
+    }
+
+    /** This person dies
+     *  <p>This is a schedulable event service routine.
+     *  <p>This may only be called only on a person who is already
+     *  <code>bedridden</code>, and it makes that person <code>dead</code>.
+     *  @param time  the time of this state change
+     */
+    public void die( double time ) {
+	assert diseaseState == DiseaseStates.bedridden: "not bedridden";
+	// update population statistics
+	diseaseState.pop--;
+	diseaseState = DiseaseStates.dead;
+	diseaseState.pop++;
+
+	if (location != null) {
+	    location.depart( time, this );
+	}
+
+	// no new event is scheduled.
+    }
+
+    /** Tell this person to go home at this time
+     *  <p>This is a schedulable event service routine.
+     *  @param time of the move
+     */
+    public void goHome( double time ) {
+	travelTo( time, home );
+    }
+
+    /** Tell this person to go somewhere
+     *  <p>This is a schedulable event service routine.
+     *  <p>Note that this enforces the rule that <code>bedridden</code>
+     *  people never leave home.
+     *  @param time  when the person goes there
+     *  @param place  where the person goes
+     */
+    public void travelTo( double time, Place place ) {
+	if ((diseaseState != DiseaseStates.bedridden) || (place == home)) {
+	    location.depart( time, this );
+	    location = place;
+	    location.arrive( time, this );
+	}
+    }
+
+    // reporting tools
+
+    /** Start the logical process of reporting results.
+     *  <p>The report is in CSV format sent to <code>system.out</code>
+     *  (aka <code>stdout</code>).  If a headline is requested, the first
+     *  line gives the names of each column.  All following lines are
+     *  numeric, giving the time and the number of people in each disease
+     *  state.  The order of the disease states is set by a private
+     *  in class <code>Person</code> and disclosed in the headline.
+     *  printed here.
+     *  @param headline is a headline to be included
+     */
+    public static void startReporting( boolean headline ) {
+	if (headline) {
+	    System.out.print( "time" );
+	    for (DiseaseStates s: DiseaseStates.values()) {
+	        System.out.print( "," );
+	        System.out.print( s.name() );
+	    }
+	    System.out.println();
+	}
+	// schedule the first report
+	Simulator.schedule( 0.0, (double t)-> Person.report( t ) );
+    }
+
+    /** Report population statistics at the given time.
+     *  <p>This is a schedulable event service routine.
+     *  <p>Each report is a CSV line sent to <code>system.out</code>
+     *  (aka <code>stdout</code>) giving the time and the
+     *  population statistics for each disease state.
+     *  @param time  the simulated time of the report
+     */
+    private static void report( double time ) {
+	System.out.print( Double.toString( time/Time.day ) );
+	for (DiseaseStates s: DiseaseStates.values()) {
+	    System.out.print( "," );
+	    System.out.print( Integer.toString( s.pop ) );
+	}
+	System.out.println();
+
+	// schedule the next report
+	Simulator.schedule( time + 24*Time.hour,
+	    (double t)-> Person.report( t )
+	);
+    }
+
+    /** Print out the entire population.
+     *  This is needed only in the early stages of debugging
+     *  and obviously useless for large populations.
+     */
+    public static void printAll() {
+	for (Person p: allPeople) {
+	    // line 1: person id and role
+	    System.out.print( p.toString() );
+	    System.out.print( " " );
+	    System.out.println( p.role.name );
+
+	    // line 2 the home
+	    System.out.print( " " ); // indent following lines
+	    System.out.print( p.home.kind.name );
+	    System.out.print( " " );
+	    System.out.print( p.home.toString() );
+	    System.out.println();
+	    // lines 3 and up: each place and its schedule
+	    for (PlaceSchedule ps: p.places ) {
+		System.out.print( " " ); // indent following lines
+		System.out.print( ps.place.kind.name );
+		System.out.print( " " );
+		System.out.print( ps.place.toString() );
+		assert ps.schedule != null: "guaranteed by PlaceKind";
+		System.out.print( ps.schedule.toString() );
+		System.out.println();
+	    }
+	}
+    }
+}
+xxxxxxxxxx
+cat > InfectionRule.java <<\xxxxxxxxxx
+// InfectionRule.java
+
+/** Statistical Description of the disease progress.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved javadoc comments
+ *  @see MyRandom
+ *  @see MyScanner
+ */
+public class InfectionRule {
+    private final double median;    // median of the distribution
+    private final double sigma;     // sigma of the distribution
+    private final double recovery;  // recovery probability
+
+    private static final MyRandom rand = MyRandom.stream();
+
+    /** scan a new InfectionRule from an input stream.
+     *  An infection rule has the following format:
+     *  <br> * the median duration of the disease state, in days
+     *  <br> * the scatter of the log-normal distribution, in days
+     *  <br> * the probability of recovery (optional, defaults to 0.0)
+     *  <br> * a semicolon
+     *  @param in  the input stream
+     *  @param context  the context for error messages
+     */
+    public InfectionRule( MyScanner in, MyScanner.Message context ) {
+	final double scatter;
+	median = Time.day * in.getNextFloat( 1.0,
+	    ()-> context.myString() + ": median expected"
+	);
+	scatter = Time.day * in.getNextFloat( 0.0,
+	    ()-> context.myString()  + " " + median + ": scatter expected"
+	);
+	if (!in.tryNextLiteral( MyScanner.semicolon )) {
+	    recovery = in.getNextFloat( 0.0,
+		()-> context.myString() + " " + median + " " + scatter
+		   + ": recovery probability expected"
+	    );
+	    if (!in.tryNextLiteral( MyScanner.semicolon )) Error.warn(
+		context.myString() + " " + median + " " + scatter
+	      + " " + recovery + "semicolon expected"
+	    );
+	} else {
+	    recovery = 0.0;
+	}
+
+	// sanity checks on the values
+	Check.positive( median, 0.0,
+	    ()-> context.myString() + " " + median + " " + scatter
+	       + " " + recovery + ": non-positive median?"
+	);
+	Check.nonNeg( scatter, 0.0,
+	    ()-> context.myString() + " " + median + " " + scatter
+	       + " " + recovery + ": negative scatter?"
+	);
+	Check.nonNeg( recovery, 0.0,
+	    ()-> context.myString() + " " + median + " " + scatter
+	       + " " + recovery + ": negative recovery probability?"
+	);
+	if (recovery > 1.0) {
+	    Error.warn(
+		context.myString() + " " + median + " " + scatter
+	      + " " + recovery + ": recovery probability greater than zero?"
+	    );
+	}
+
+	// we do this up front so scatter is never seen again.
+	sigma = Math.log( (scatter + median) / median );
+    }
+
+    /** Toss the dice to see if someone recovers under the terms of this rule.
+     *  <p>Recovery probabilities are a fixed property of the rule.
+     *  @return true if recovers, false if not
+     */
+    public boolean recover() {
+	return rand.nextFloat() <= recovery;
+    }
+
+    /** Toss the dice to see how long this disease state lasts under this rule.
+     *  <p>Disease duration is determined by a long-normal distribution
+     *  specified with the rule.
+     *  @return the time until the next change of disease state
+     */
+    public double duration() {
+	return rand.nextLogNormal( median, sigma );
+    }
+}
+xxxxxxxxxx
+cat > Error.java <<\xxxxxxxxxx
+// Error.java
+
+/** Error reporting framework
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 better Javadoc usage
+ *  <p>All error and warning messages go to <tt>System.err</tt>
+ *  (aka <tt>stderr</tt>, the standard error stream).
+ */
+public class Error {
+    private static int warningCount = 0;
+
+    /** Report a fatal error.
+     *  <p>This never returns, the program terminates reporting failure.
+     *  @param msg  error message to be output
+     */
+    public static void fatal( String msg ) {
+	System.err.println( "Epidemic: " + msg );
+	System.exit( 1 );  // abnormal termination
+    }
+
+    /** Give a non-fatal warning.
+     *  <p>This keeps a running count of warnings.
+     *  @see exitIfWarnings
+     *  @param msg  the warning message
+     */
+    public static void warn( String msg ) {
+	System.err.println( "Warning: " + msg );
+	warningCount = warningCount + 1;
+    }
+
+    /** Terminate program if there were any warnings.
+     *  @param msg  the message to use
+     */
+    public static void exitIfWarnings( String msg ) {
+	if (warningCount > 0) fatal( msg );
+    }
+}
+xxxxxxxxxx
+cat > MyScanner.java <<\xxxxxxxxxx
+// MyScanner.java
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.util.Scanner;
+import java.util.regex.Pattern;
+
+/** Support for scanning input files with error reporting
+ *  <p>This is a wrapper class around class Scanner.
+ *  Ideally, this should extend class <code>java.util.Scanner</code> but
+ *  that class is final, precluding extension.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved Javadoc usage
+ *  @see Error
+ *  @see "java.util.Scanner"
+ */
+public class MyScanner {
+    private Scanner sc; // the scanner we are wrapping
+
+    /** Construct a scanner to scan a text file
+     *  @param  f  the file to scan from
+     *  @throws FileNotFoundException if f cannot be opened for reading
+     */
+    public MyScanner( File f ) throws FileNotFoundException {
+	sc = new Scanner( f );
+    }
+
+    // the following methods are ones we wish we could inherit, so we fake it!
+
+    /** a method from class <code>java.util.Scanner</code>.
+     *  @return true if there is more text to scan
+     */
+    public boolean hasNext() { return sc.hasNext(); }
+
+    /** a method from class <code>java.util.Scanner</code>.
+     *  @param s  the string to look for
+     *  @return true if the next token is a particular literal string
+     */
+    public boolean hasNext( String s ) { return sc.hasNext( s ); }
+
+    /** a method from class <code>java.util.Scanner</code>.
+     *  @return the next token
+     */
+    public String next() { return sc.next(); }
+
+    // patterns that matter in what follows
+
+    // delimiters are spaces, tabs, newlines and carriage returns
+    private static final Pattern delimPat = Pattern.compile( "[ \t\n\r]*" );
+
+    // note that all of the following patterns allow an empty string to match
+    // this is used in error detection below
+
+    // if it's not a name, it begins with a non-letter
+    private static final Pattern NotNamePat
+	= Pattern.compile( "([^A-Za-z]*)|" );
+
+    // names consist of a letter followed optionally by letters or digits
+    private static final Pattern namePat
+	= Pattern.compile( "([A-Za-z][0-9A-Za-z]*)|" );
+
+    // if it's not an int, it begins with a non-digit, non-negative-sign
+    private static final Pattern NotIntPat
+	= Pattern.compile( "([^-0-9]*)|" );
+
+    // ints consist of an optional sign followed by at least one digit
+    private static final Pattern intPat = Pattern.compile(
+	"((-[0-9]|)[0-9]*)"
+    );
+
+    // floats consist of an optional sign followed by
+    // at least one digit, with an optional point before between or after them
+    private static final Pattern floatPat = Pattern.compile(
+     "-?(([0-9]+\\.[0-9]*)|(\\.[0-9]+)|([0-9]*))"
+    );
+
+    /** Tool to defer computation of messages output by methods of MyScanner.
+     *  <p>To pass a specific message, create a subclass of Message to do it
+     *  In general, users will not need to use this interface by name;
+     *  instead, they will pass parameters using lambda expressions such as:
+     *  <pre>
+     *  ()-&gt; "Some message" + composed + "as needed"
+     *  </pre>
+     *  <p>The reason for passing messages this way is because most input is
+     *  mostly correct, so there is no reason to construct a complete error
+     *  message unless there is an actual error in the input.  Therefore,
+     *  instead of passing a string, we pass a lambda expression that allows
+     *  the string to be computed in the rare case that it is actually needed.
+     */
+    public interface Message {
+	String myString();
+    }
+
+    // new methods added to class Scanner
+
+    /** Scan the next name or complain if it is missing.
+     *  <p>Names begin with a letter followed by letters or digits.
+     *  If there is no name, the scanner skips until if finds one.
+     *  This differs from <code>next()</code> in that the name need not
+     *  end with a delimiter but may abut trailing punctuation.
+     *  @param defalt  return value if there is no name
+     *  @param errorMessage  the message to complain with (lambda expression)
+     *  @return the name that was found or defalt if there wasn't one
+     */
+    public String getNextName( String defalt, Message errorMessage ) {
+	// first skip the delimiter, accumulate anything that's not a name
+	String notName = sc.skip( delimPat ).skip( NotNamePat ).match().group();
+
+	// second accumulate the name
+	String name = sc.skip( namePat ).match().group();
+
+	if (!notName.isEmpty()) { // there's something else a name belonged
+	    Error.warn(
+		errorMessage.myString() + ": name expected, skipping " + notName
+	    );
+	}
+
+	if (name.isEmpty()) { // missing name
+	    Error.warn( errorMessage.myString() );
+	    return defalt;
+	} else { // there was a name
+	    return name;
+	}
+    }
+
+    /** get the next integer from the scanner or complain if there is none.
+     *  <p>Integers consist of at least one decimal digit in sequence.
+     *  If there is no integer, the scanner skips until if finds one.
+     *  This number need not
+     *  end with a delimiter but may abut trailing punctuation.
+     *  @param defalt  return value if there is no next integer
+     *  @param errorMessage the message to complain with (lambda expression)
+     *  @return the integer that was found or defalt if there wasn't one
+     */
+    public int getNextInt( int defalt, Message errorMessage ) {
+	// first skip the delimiter, accumulate anything that's not an int
+	String notInt = sc.skip( delimPat ).skip( NotIntPat ).match().group();
+
+	// second accumulate the int, if any
+	String text = sc.skip( delimPat ).skip( intPat ).match().group();
+
+	if (!notInt.isEmpty()) { // there's something else where an int belonged
+	    Error.warn(
+		errorMessage.myString() + ": int expected, skipping " + notInt
+	    );
+	}
+
+	if (text.isEmpty()) { // missing name
+	    Error.warn( errorMessage.myString() );
+	    return defalt;
+	} else { // the name was present and it matches intPat
+	    return Integer.parseInt( text );
+	}
+    }
+
+    /** Scan the next floating point number or complain if there is none.
+     *  <p>Numbers may be simple integers (no point) or an optional
+     *  integer part, a point and an optional fractional part, but a point
+     *  standing alone is not a number.  Exponential notation is not currently
+     *  supported.  If there is no number, the scanner skips until it finds one.
+     *  This number need not
+     *  end with a delimiter but may abut trailing punctuation.
+     *  @param defalt  return value if there is no next float
+     *  @param errorMessage  the message to complain with (lambda expression)
+     *  @return the number that was found or defalt if there wasn't one
+     */
+    public double getNextFloat( double defalt, Message errorMessage ) {
+	// skip the delimiter, if any, then the float, if any; get the latter
+	String text = sc.skip( delimPat ).skip( floatPat ).match().group();
+
+	if (text.isEmpty()) { // missing name
+	    Error.warn( errorMessage.myString() );
+	    return defalt;
+	} else { // the name was present and it matches intPat
+	    return Float.parseFloat( text );
+	}
+    }
+
+    /** Parameter for <code>tryNextLiteral</code> to recognize begin paren */
+    public static final Pattern beginParen = Pattern.compile( "\\(|" );
+    /** Parameter for <code>tryNextLiteral</code> to recognize end paren */
+    public static final Pattern endParen = Pattern.compile( "\\)|" );
+    /** Parameter for <code>tryNextLiteral</code> to recognize dash */
+    public static final Pattern dash = Pattern.compile( "-|" );
+    /** Parameter for <code>tryNextLiteral</code> to recognize semicolon */
+    public static final Pattern semicolon = Pattern.compile( ";|" );
+
+    /** Try to scan the next literal.
+     *  <p>If the next input to the scanner is a literal, scan over it.
+     *  Otherwise, report that the literal was not present.
+     *  This differs from <code>hasNext(String)</code> in two ways:
+     *  the literal need not end with a delimiter but may abut what follows,
+     *  and if the literal is present, it is skipped.
+     *  <p>For technical reasons, the pattern used to specify the literal must
+     *  match the empty string as well.  To simplify things, patterns for
+     *  popular literals are provided, so most users will write code like this:
+     *  <pre>
+     *  MyScanner.tryNextLiteral( MyScanner.dash )
+     *  </pre>
+     *  @param literal  the literal to get
+     *  @return true if the literal was present and skipped, false otherwise
+     */
+    public boolean tryNextLiteral( Pattern literal ) {
+	sc.skip( delimPat ); // allow delimiter before literal!
+	String s = sc.skip( literal ).match().group();
+	return !s.isEmpty();
+    }
+
+    /** Scan the next literal or complain if missing.
+     *  <p>This uses <code>tryNextLiteral</code> to identify the literal.
+     *  @param literal  the literal to get
+     *  @param errorMessage  the message to complain with (lambda expression)
+     *  @see tryNextLiteral
+     */
+    public void getNextLiteral( Pattern literal, Message errorMessage ) {
+	if ( !tryNextLiteral( literal ) ) {
+	    Error.warn( errorMessage.myString() );
+	}
+    }
+}
+xxxxxxxxxx
+cat > Check.java <<\xxxxxxxxxx
+// Check.java
+
+/** A collection of semantic error checking utility methods.
+ *  <p>This is a place to put error checking code that doesn't fit elsewhere.
+ *  The error check methods sometimes take up more space than the
+ *  code they helped clarify, but there is a small net gain in readability.
+ *  @author Douglas W. Jones
+ *  @version Apr. 13, 2021 improved Javadoc comments
+ *  @see Error
+ */
+public class Check {
+    private Check(){} // nobody should ever construct a check object
+
+    /** Force a floating (double) value to be positive.
+     *  @param v   value to check
+     *  @param d   default value to return if the check fails
+     *  @param m   message to output if check fails
+     *  @return either value if success or defalt if failure
+     */
+    public static double positive( double v, double d, MyScanner.Message m ) {
+	if (v > 0.0) {
+	    return v;
+	} else {
+	    Error.warn( m.myString() );
+	    return d;
+	}
+    }
+
+    /** Force a floating (double) value to be non negative.
+     *  @param v   value to check
+     *  @param d   default value to return if the check fails
+     *  @param m   message to output if check fails
+     *  @return either value if success or defalt if failure
+     */
+    public static double nonNeg( double v, double d, MyScanner.Message m ) {
+	if (v >= 0.0) {
+	    return v;
+	} else {
+	    Error.warn( m.myString() );
+	    return d;
+	}
+    }
+
+    /** Scan end of command containing a positive integer argument.
+     *  @param in   the scanner to use
+     *  @param msg   the error message prefix to output if error
+     *  @return the value scanned or 1 if the value was defective
+     */
+    public static int posIntSemicolon( MyScanner in, MyScanner.Message msg ) {
+	final int num = in.getNextInt( 1, ()-> msg + ": missing integer" );
+	in.getNextLiteral(
+	    MyScanner.semicolon,
+	    ()-> msg.myString() + num + ": missing ;"
+	);
+
+	if (num <= 0) {
+	    Error.warn( msg.myString() + num + ": not positive" );
+	    return 1;
+	}
+	return num;
+    }
+}
+xxxxxxxxxx
+cat > MyRandom.java <<\xxxxxxxxxx
+// MyRandom.java
+
+import java.util.Random;
+
+/** Wrapper extending class Random, turning it into a singleton class.
+ *  <p>Ideally, no user should ever create an instance of Random, all use this!
+ *  @author Douglas W. Jones
+ *  @version Apr. 6, 2021 lifted from Epidemic.java of that date
+ *  @see Random
+ */
+public class MyRandom extends Random {
+    /** the only random number stream
+     */
+    public static final MyRandom stream = new MyRandom(); // the only stream;
+
+    // nobody can construct a MyRandom except the above line of code
+    private MyRandom() {
+	super();
+    }
+
+    /* alternative access to the only random number stream
+     * @return the only stream
+     */
+    public static MyRandom stream() {
+	return stream;
+    }
+
+    // add distributions that weren't built in
+
+    /** Exponential distribution.
+     *  @param mean  the mean value of the distribution
+     *  @return  a positive exponentially distributed random value
+     */
+    public double nextExponential( double mean ) {
+	return mean * -Math.log( this.nextDouble() );
+    }
+
+    /** Log-normal distribution.
+     *  @param median    the median value of the distribution
+     *  @param sigma     the sigma of the underlying normal distribution
+     *  @return a log-normally distributed random value
+     */
+    public double nextLogNormal( double median, double sigma ) {
+	return Math.exp( sigma * this.nextGaussian() ) * median;
+    }
+}
+xxxxxxxxxx
+cat > Simulator.java <<\xxxxxxxxxx
+// Simulator.java
+
+import java.util.PriorityQueue;
+
+/** Framework for discrete event simulation
+ *  @author Douglas W. Jones
+ *  @version Apr. 6, 2021 lifted from Epidemic.java of that date
+ */
+public class Simulator {
+    private Simulator() {} // prevent construction of instances!  Don't call!
+
+    /** Functional interface for scheduling actions to be done later
+     *  Users will generally never mention Action or trigger because
+     *  this is used to support lambda expressions passed to schedule().
+     */
+    public static interface Action {
+	void trigger( double time );
+    }
+
+    private static class Event {
+	public final double time; // when will this event occur
+	public final Action act;  // what to do then
+	public Event( double t, Action a ) {
+	    time = t;
+	    act = a;
+	}
+    }
+
+    private static final PriorityQueue<Event> eventSet = new PriorityQueue<>(
+	( Event e1, Event e2 )-> Double.compare( e1.time, e2.time )
+    );
+
+    /** Schedule an event to occur at a future time
+     *  @param t, the time of the event
+     *  @param a, what to do for that event
+     *  example:
+     *  <pre>
+     *  Simulator.schedule(
+     *      now+later, (double t)-&gt; whatToDo( then, stuff )
+     *  );
+     *  </pre>
+     */
+    public static void schedule( double t, Action a ) {
+	eventSet.add( new Event( t, a ) );
+    }
+
+    /** Run the simulation
+     *  Before running the simulation, schedule the initial events
+     *  all of the simulation occurs as side effects of scheduled events
+     */
+    public static void run() {
+	while (!eventSet.isEmpty()) {
+	    Event e = eventSet.remove();
+	    e.act.trigger( e.time );
+	}
+    }
+}
+xxxxxxxxxx
+cat > Makefile <<\xxxxxxxxxx
+# Makefile
+# Author: Douglas W. Jones
+# Version: Apr. 19, 2021
+
+# Support for:
+#   make                    -- make the default target
+#   make Epidemic.class     -- the default target
+
+# Plus the following utilities
+#   make demo               -- demonstrate the epidemic simulator
+#   make clean              -- delete all files created by make
+#   make html               -- make javadoc web site from simulator code
+#   make shar               -- make shell archive from this directory
+
+########
+# named categories of files used below
+
+# model files
+ModSrc = PlaceKind.java  Place.java  Role.java  Person.java  InfectionRule.java
+ModCls = PlaceKind.class Place.class Role.class Person.class InfectionRule.class
+
+# model support files
+ModSupSrc = Time.java  Schedule.java
+ModSupCls  = Time.class Schedule.class
+
+# simulation utility files
+SimUtilSrc = MyRandom.java  Simulator.java
+SimUtilCls  = MyRandom.class Simulator.class
+
+# Input utility files
+InpUtilSrc = Error.java  MyScanner.java  Check.java
+InpUtilCls  = Error.class MyScanner.class Check.class
+
+# All source files
+SimulatorSrc = Epidemic.java $(ModSupSrc) $(ModSrc) $(InpUtilSrc) $(SimUtilSrc)
+
+# Test/demonstration files
+Tests = testa testb testc testd
+
+########
+# default make for the epidemic simulator
+
+Epidemic.class: Epidemic.java
+Epidemic.class: $(InpUtilCls)
+Epidemic.class: Simulator.class
+Epidemic.class: Time.class
+Epidemic.class: PlaceKind.class Role.class Person.class InfectionRule.class
+	javac Epidemic.java
+
+########
+# core classes of the model used for the epidemic simulator
+# Note: there is a dependency knot tying all of the below together, not shown!
+
+PlaceKind.class: PlaceKind.java
+PlaceKind.class: $(InpUtilCls)
+PlaceKind.class: MyRandom.class
+PlaceKind.class: Schedule.class Time.class
+PlaceKind.class: Place.class Person.class
+	javac PlaceKind.java
+
+Place.class: Place.java
+Place.class: PlaceKind.class Person.class
+	javac Place.java
+
+Role.class: Role.java
+Role.class: $(InpUtilCls)
+Role.class: MyRandom.class
+Role.class: PlaceKind.class Person.class
+Role.class: Schedule.class
+	javac Role.java
+
+Person.class: Person.java
+Person.class: $(SimUtilCls)
+Person.class: Schedule.class Time.class
+Person.class: Place.class Role.class InfectionRule.class
+	javac Person.java
+
+Schedule.class: Schedule.java
+Schedule.class: $(InpUtilCls)
+Schedule.class: $(SimUtilCls)
+Schedule.class: Time.class
+Schedule.class: Place.class Person.class
+	javac Schedule.java
+
+########
+# support classes of the model used for the epidemic simulator
+
+InfectionRule.class: InfectionRule.java
+InfectionRule.class: $(InpUtilCls)
+InfectionRule.class: MyRandom.class
+InfectionRule.class: Time.class
+	javac InfectionRule.java
+
+Time.class: Time.java
+	javac Time.java
+
+########
+# generic simulation support classes
+
+MyRandom.class: MyRandom.java
+	javac MyRandom.java
+
+Simulator.class: Simulator.java
+	javac Simulator.java
+
+########
+# input management support classes
+
+Check.class: Check.java
+Check.class: MyScanner.class Error.class
+	javac Check.java
+
+MyScanner.class: MyScanner.java
+MyScanner.class: Error.class
+	javac MyScanner.java
+
+Error.class: Error.java
+	javac Error.java
+
+########
+# utility make commands
+
+demo: Epidemic.class
+	java Epidemic testa
+
+clean:
+	rm -f *.class
+	rm -f *.html
+	rm -f *.css
+	rm -f *.js
+	rm -f package-list
+
+html: $(SimulatorSrc)
+	javadoc $(SimulatorSrc)
+
+shar: README $(SimulatorSrc) Makefile $(Tests)
+	shar README $(SimulatorSrc) Makefile $(Tests) > shar
+xxxxxxxxxx
+cat > testa <<\xxxxxxxxxx
+population 100;                     latent       2.0 0;
+infected 1;                         asymptomatic 2   0;
+place home  10  0 0.01;             symptomatic  2   0   0.9;
+place work  10  0 0.01;             bedridden    2   0   0.9;
+role homebody 60 home;
+role worker   40 home work (9-17);
+end 30;
+xxxxxxxxxx
+cat > testb <<\xxxxxxxxxx
+population 100;                     latent       2.0 0;
+infected 1;                         asymptomatic 2   0;
+place home  10  0 0.01;             symptomatic  2   0   0.9;
+place work  10  0 0.01;             bedridden    2   0   0.9;
+role everybody 100 home work (9-17 0.4);
+end 30;
+xxxxxxxxxx
+cat > testc <<\xxxxxxxxxx
+population 100;               latent       2.0 0;
+infected 1;                   asymptomatic 3   0;
+place earth 100 0 0.001;      symptomatic  5   1   0.9;
+place moon  100 0 .0001;      bedridden    8   2   0.9;
+place mars  100 0 0.001;
+role human   50 earth  moon (10-11.06);
+role martian 50 mars   moon (11-12);
+end 30;
+xxxxxxxxxx
+cat > testd <<\xxxxxxxxxx
+population 100;               latent       2.0 0;
+infected 1;                   asymptomatic 3   0;
+place earth 100 0 0.001;      symptomatic  5   1   0.9;
+place moon  100 0 .0001;      bedridden    8   2   0.9;
+place mars  100 0 0.001;
+role human   50 earth  moon (11-12 0.1);
+role martian 50 mars   moon (11-12 0.1);
+end 30;
+xxxxxxxxxx

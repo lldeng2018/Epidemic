@@ -1,0 +1,81 @@
+EPIDEMIC SIMULATOR
+==================
+
+Author:  Douglas W. Jones
+Version: Apr. 20, 2021
+
+The code in this directory includes a solution to Machine Problem 11 from
+CS:2820 at the University of Iowa.
+
+This epidemic simulator takes an input file containing a description of the
+places in a community, the roles fulfilled by the population of that community
+and the nature of the disease.  The output is a CSV file showing the progress
+of the disease through the community.
+
+Files
+-----
+
+This directory contains the following source files for the epidemic simulator:
+
+* Error.java		error reporting framework
+* MyScanner.java	Wrapper around java.util.scanner
+* Check.java		Utility to do sanity checks on values
+* MyRandom.java		Extensions to Java.util.random
+* Simulator.java	Simulation framework
+* Time.java		Definitions of time units
+
+* InfectionRule.java	How do stages of the infection progress
+* Schedule.java		How do people decide to move from place to place
+* Person.java		How does each person behave, also population statistics
+* Place.java		How does each place work
+* PlaceKind.java	What kinds of places are there
+* Role.java		What kinds of roles to people fit into
+
+* Epidemic.java		the main program
+
+The following additional files are included
+
+* README		this file
+* Makefile              instructions for building and running the simulator
+
+* testa			test input, workers spread disease between families
+* testb			test input, everyone works sometimes, spreading it
+* testc			test input, two compartment, everyone has brief contact
+* testd			test input, two compartment, fewer extended contacts
+
+Instructions
+------------
+
+To build the epidemic simulator, use this shell command
+
+	make
+
+To make a web site of documentation from the javadoc comments in the code
+
+        make html
+
+To clean up files that were created by make
+
+        make clean
+
+To test or demonstrate the simulator, use one of these shell commands
+
+	make demo	# equivalent to java Epidemic testa
+
+	java Epidemic testa
+	java Epidemic testb
+	java Epidemic testc
+	java Epidemic testd
+
+Tests A and B should produce very similar results as a wave of infection
+sweeps through the community until everyone has either recovered or died of
+the simulated disease.
+
+Tests C and D are bi-stable; they involve places named earth and mars, where
+people from those planets travel to the moon and make brief contact.
+Sometimes, the epidemic fails to spread between planets, sometimes, it
+jumps the gap between planets and sweeps through both.
+
+Tests A and C involve people following fixed schedules, while tests B and D
+involve schedules with random elements, where the random elements have been
+adjusted so that test B produces output similar to test A and D similar to C.
