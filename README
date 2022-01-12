@@ -4,8 +4,8 @@ EPIDEMIC SIMULATOR
 Author:  Douglas W. Jones
 Version: Apr. 20, 2021
 
-The code in this directory includes a solution to Machine Problem 11 from
-CS:2820 at the University of Iowa.
+Semester project developed in CS:2820 Object Oriented Software Development, University
+of Iowa.
 
 This epidemic simulator takes an input file containing a description of the
 places in a community, the roles fulfilled by the population of that community
